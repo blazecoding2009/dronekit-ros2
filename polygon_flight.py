@@ -2,7 +2,6 @@ import rclpy
 from rclpy.node import Node
 from mavros_msgs.msg import State, AttitudeTarget
 from geometry_msgs.msg import PoseStamped, TwistStamped
-from std_msgs.msg import Header
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from math import radians, sin, cos
 
@@ -25,12 +24,15 @@ class PolygonFlight(Node):
 
     def state_cb(self, msg):
         self.current_state = msg
+        self.get_logger().info(f"Current State: {self.current_state}")
 
     def arm_and_takeoff(self, altitude):
+        self.get_logger().info('Arming...')
+        self.call_arming(True)
+
         while not self.current_state.armed:
-            self.call_arming(True)
-            self.get_logger().info('Arming...')
-            rclpy.sleep(1.0)
+            self.get_logger().info('Waiting for arming...')
+            rclpy.spin_once(self, timeout_sec=1.0)
         
         self.get_logger().info('Armed! Taking off...')
         self.call_takeoff(altitude)
@@ -40,15 +42,24 @@ class PolygonFlight(Node):
         arming_req.value = value
         future = self.arming_client.call_async(arming_req)
         rclpy.spin_until_future_complete(self, future)
-        return future.result()
+        result = future.result()
+        self.get_logger().info(f"Arming response: {result.success}")
 
+    def call_takeoff(self, altitude):
+        takeoff_req = CommandTOL.Request()
+        takeoff_req.altitude = altitude
+        future = self.takeoff_client.call_async(takeoff_req)
+        rclpy.spin_until_future_complete(self, future)
+        result = future.result()
+        self.get_logger().info(f"Takeoff response: {result.success}")
 
     def set_offboard_mode(self):
         set_mode_req = SetMode.Request()
         set_mode_req.custom_mode = "OFFBOARD"
         future = self.set_mode_client.call_async(set_mode_req)
         rclpy.spin_until_future_complete(self, future)
-        return future.result()
+        result = future.result()
+        self.get_logger().info(f"Set mode response: {result.mode_sent}")
 
     def send_velocity(self, vx, vy, vz):
         vel_msg = TwistStamped()
@@ -81,12 +92,18 @@ class PolygonFlight(Node):
         yaw_msg.orientation.z = sin(radians(angle) / 2.0)
         self.local_pos_pub.publish(yaw_msg)
 
+    def timer_callback(self):
+        if self.current_state.mode != "OFFBOARD":
+            self.set_offboard_mode()
+        
+        if not self.current_state.armed:
+            self.call_arming(True)
+
     def run(self):
         self.get_logger().info('Starting Polygon Flight')
         self.arm_and_takeoff(10)
         self.draw_polygon(sides=5, distance=10)
         self.get_logger().info('Polygon Flight Complete')
-
 
 def main(args=None):
     rclpy.init(args=args)
